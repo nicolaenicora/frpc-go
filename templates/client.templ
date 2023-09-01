@@ -131,24 +131,33 @@ func (e CloseError) Error() string {
                 open.Encode(p.Content)
                 p.Metadata.ContentLength = uint32(len(*p.Content))
 
-                fStream := c.client.Stream(id)
-                fStream.WritePacket(p)
+                fStream, err := c.client.Stream(id)
+                if err != nil {
+                    return nil, err
+                }
+                err = fStream.WritePacket(p)
+                if err != nil {
+                    return nil, err
+                }
 
                 if req != nil {
                     p2 := packet.Get()
                     req.Encode(p2.Content)
                     p2.Metadata.ContentLength = uint32(len(*p2.Content))
-                    fStream.WritePacket(p2)
+                    err = fStream.WritePacket(p2)
+                    if err != nil {
+                        return nil, err
+                    }
                 }
 
-                stream := {{ CamelCaseName $method.Name }}Client{
+                actionClient := {{ CamelCaseName $method.Name }}Client{
                     context: ctx,
                     stream: fStream,
                     closed: atomic.NewBool(false),
                 }
 
-                stream.recv = func () (*{{ CamelCase $method.Output.FullName }}, error) {
-                    p, err := stream.stream.ReadPacket()
+                actionClient.recv = func () (*{{ CamelCase $method.Output.FullName }}, error) {
+                    p, err := actionClient.stream.ReadPacket()
                     if err != nil {
                         return nil, err
                     }
@@ -165,23 +174,23 @@ func (e CloseError) Error() string {
                     return res, nil
                 }
 
-                stream.close = func () {
-                    stream.stream.Close()
+                actionClient.close = func () error {
+                    return actionClient.stream.Close()
                 }
-                stream.send = func (m *{{ CamelCase $method.Input.FullName }}) error {
+                actionClient.send = func (m *{{ CamelCase $method.Input.FullName }}) error {
                     p := packet.Get()
 
                     m.Encode(p.Content)
                     p.Metadata.ContentLength = uint32(len(*p.Content))
-                    return stream.stream.WritePacket(p)
+                    return actionClient.stream.WritePacket(p)
                 }
-                return &stream, nil
+                return &actionClient, nil
             }
 
             type {{ CamelCaseName $method.Name }}Client struct {
                 context context.Context
                 recv func() (*{{ CamelCase $method.Output.FullName }}, error)
-                close func()
+                close func() error
                 closed *atomic.Bool
 
                 stream *frisbee.Stream
@@ -212,7 +221,7 @@ func (e CloseError) Error() string {
                 }
             {{ end -}}
         {{else -}}
-        func (c *sub{{ CamelCaseName $service.Name }}Client) {{ CamelCaseName $method.Name }}(ctx context.Context, req *{{ CamelCase $method.Input.FullName }}) (res *{{ CamelCase $method.Output.FullName }}, err error) {
+        func (c *sub{{ CamelCaseName $service.Name }}Client) {{ CamelCaseName $method.Name }}(ctx context.Context, req *{{ CamelCase $method.Input.FullName }}) (*{{ CamelCase $method.Output.FullName }}, error) {
             ch := make(chan *{{ CamelCase $method.Output.FullName }}, 1)
             p := packet.Get()
             p.Metadata.Operation = {{ $opIndex }}
@@ -228,22 +237,23 @@ func (e CloseError) Error() string {
             c.inflight{{ CamelCaseName $method.Name }}Mu.Lock()
             c.inflight{{ CamelCaseName $method.Name }}[id] = ch
             c.inflight{{ CamelCaseName $method.Name }}Mu.Unlock()
-            err = c.client.WritePacket(p)
+            err := c.client.WritePacket(p)
             if err != nil {
                 packet.Put(p)
-                return
+                return nil, err
             }
+            var res *{{ CamelCase $method.Output.FullName }}
             select {
-                case res = <- ch:
-                    err = res.error
-                case <- ctx.Done():
-                    err = ctx.Err()
+            case res = <-ch:
+                err = res.error
+            case <-ctx.Done():
+                err = ctx.Err()
             }
-            c.inflight{{ CamelCaseName $method.Name }}Mu.Lock()
-            delete(c.inflight{{ CamelCaseName $method.Name }}, id)
-            c.inflight{{ CamelCaseName $method.Name }}Mu.Unlock()
+            c.inflightEchoMu.Lock()
+            delete(c.inflightEcho, id)
+            c.inflightEchoMu.Unlock()
             packet.Put(p)
-            return
+            return res, err
         }
     {{end -}}
 {{end -}}
