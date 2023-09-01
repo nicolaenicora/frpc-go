@@ -203,8 +203,8 @@ func (s *Server) SetOnClosed(f func(*frisbee.Async, error)) error {
                         return x.recv()
                     }
 
-                    func (x *{{ CamelCaseName $method.Name }}Server) close() {
-                        x.stream.Close()
+                    func (x *{{ CamelCaseName $method.Name }}Server) close() error {
+                        return x.stream.Close()
                     }
                 {{ end -}}
 
